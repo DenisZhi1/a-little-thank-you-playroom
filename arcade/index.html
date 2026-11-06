@@ -94,7 +94,8 @@ p{line-height:1.38;margin:5px 0}
 .popup{width:min(80%,88px);height:72%;bottom:25%;opacity:0;pointer-events:none}
 .popup img{width:100%;height:100%;object-fit:contain;filter:drop-shadow(0 3px 2px #4f493f69)}
 .flowerpot.up .popup{opacity:1;animation:spring-pop .23s ease-out}
-.flowerpot.up:hover .pot,.flowerpot.up:focus-visible .pot{box-shadow:0 0 0 3px #ffefac}
+.flowerpot.up:not(:disabled):hover .pot,.flowerpot.up:focus-visible .pot{box-shadow:0 0 0 3px #ffefac}
+.pop-wave{display:table;margin-top:8px;padding:4px 8px;border-radius:11px;background:#e7ecd0;color:#4c5d34;font-size:.75rem;font-weight:800}
 @keyframes spring-pop{0%{transform:translate(-50%,36%);opacity:0}78%{transform:translate(-50%,-7%)}100%{transform:translate(-50%,0)}}
 .airfield{position:absolute;inset:6% 2.5%;display:grid;grid-template-rows:repeat(3,1fr);gap:3px}
 .flight-lane{position:relative;min-height:0;min-width:0;border:1px dashed #f9fff9af;background:#ebf6ff19;border-radius:13px;overflow:hidden;touch-action:manipulation}
@@ -400,10 +401,13 @@ function prompt() {
       <ul class="gate-key">${task().options.map((id,i)=>`<li><b>${letters[i]}</b><span>${ARC.clues[id].word}</span></li>`).join('')}</ul>`;
   }
   if (game==='pop') {
+    const active = round().active;
     return `<span class="kicker">LISTEN &amp; CATCH</span><h2>Which gift?</h2>
-      ${btn(round().active?'▶ Listen again':'▶ Listen &amp; start','listen')}
-      ${hint ? `<p class="clue-line">${q.clue}</p>` : btn('Read a clue','hint','','secondary')}
-      ${!round().active ? btn('Start without sound','go','','quiet') : ''}`;
+      ${btn(active?'▶ Listen again':'▶ Listen &amp; start','listen')}
+      ${active
+        ? hint ? `<p class="clue-line">${q.clue}</p>` : btn('Show a clue','hint','','secondary')
+        : btn('Read &amp; start','go','','secondary')}
+      <span class="pop-wave"></span>`;
   }
   return `<span class="kicker">TODAY’S ORDER</span><p class="clue-line">Could I have ${q.order}, please?</p>
     ${btn('▶ Hear the gift','listen','','secondary')}
@@ -452,6 +456,7 @@ function playView() {
   const feedback = round().feedback;
   const feedbackText = feedback?.ok ? `Nice! +${feedback.points} points.${attempt.streak>1?` ×${attempt.streak} streak!`:''}` :
     feedback ? `${feedback.chosen?`You chose ${ARC.clues[feedback.chosen].order}.`:'You missed the gift.'} You needed ${ARC.clues[feedback.task].order}.` : '';
+  const instructions = game==='pop' && !round().active ? 'Choose how to start, then tap the matching gift.' : launchers[game].control;
   return `<div class="topbar">${btn('‹ Games','menu','','quiet')}<h1 id="title" tabindex="-1">${title()}</h1>
       <div class="score" aria-label="Score and pace">${score()}</div></div>
     <div class="play-layout">
@@ -463,10 +468,10 @@ function playView() {
           ${feedback?`<div class="round-result ${feedback.ok?'win':'miss'}"><b>${feedback.ok?'★':'♡'}</b><span>${feedbackText}</span></div>`:''}
         </div>
         ${game!=='maze'?'<div class="clock-track" aria-hidden="true"><i></i></div>':''}
-        <div class="board-footer"><p role="status">${notice || feedbackText || launchers[game].control}</p>
+        <div class="board-footer"><p role="status">${notice || feedbackText || instructions}</p>
           <div class="buttons">
             ${feedback ? btn(ARC.done(attempt)?'See results ›':'Next round ›','next') :
-              btn(round().paused?'Resume':'Pause','pause','','secondary')}
+              round().active ? btn(round().paused?'Resume':'Pause','pause','','secondary') : ''}
             ${btn('Finish','finish','','quiet')}
           </div>
         </div>
@@ -528,7 +533,10 @@ function listen() {
   function finished() {
     if (clip!==audio) return;
     listening = false;
-    if (game==='pop') setNotice('Tap the matching gift when it pops up.');
+    if (game==='pop') {
+      setNotice('Tap the matching gift. It can move to a new pot!');
+      updateStage();
+    }
   }
   audio.onended = finished;
   audio.play().catch(()=>{
@@ -546,7 +554,7 @@ function start() {
   sessions[game] = attempt;
   view = 'play';
   notice = '';
-  paint('#title');
+  paint(game==='pop'?'[data-action="listen"]':'#title');
 }
 
 function answer(id) {
@@ -618,21 +626,29 @@ function updateStage() {
     return;
   }
   const wave = ARC.wave(attempt);
-  const visible = round().active && !listening && !round().feedback && wave.visible;
-  const key = visible ? wave.index : 'empty';
+  // Keep the current gifts in view while waiting to start, listening, or changing waves.
+  const index = Math.min(wave.index,task().waves.length-1);
+  const canCatch = round().active && !listening && !round().paused && !round().feedback && wave.visible;
+  const phase = !round().active ? 'Ready to play' : listening ? 'Listen first' : `Wave ${index+1} / ${task().waves.length}`;
+  const key = `${index}:${phase}:${canCatch}`;
   if (key===lastWave) return;
   lastWave = key;
-  const gifts = visible ? task().waves[wave.index] || [] : [];
+  scene.querySelector('.pop-wave').textContent = phase;
+  const gifts = task().waves[index];
   scene.querySelectorAll('.flowerpot').forEach((pot,i)=>{
     const gift = gifts.find(item=>item.hole===i);
-    pot.disabled = !gift || round().paused;
+    pot.disabled = !gift || !canCatch;
     pot.classList.toggle('up',Boolean(gift));
     pot.setAttribute('aria-label',gift?`Pot ${i+1}, ${ARC.clues[gift.id].order}`:`Empty pot ${i+1}`);
-    pot.querySelector('.popup').innerHTML = gift ? pic(gift.id) : '';
+    if (pot.dataset.gift !== (gift?.id || '')) {
+      pot.querySelector('.popup').innerHTML = gift ? pic(gift.id) : '';
+      pot.dataset.gift = gift?.id || '';
+    }
   });
 }
 
 function pause() {
+  if (!round().active) return;
   round().paused = !round().paused;
   if (round().paused) stopAudio();
   notice = '';
@@ -645,7 +661,7 @@ scene.addEventListener('click',event=>{
   const {action,value} = button.dataset;
   switch(action) {
     case 'menu':
-      if (view==='play' && !round().feedback) round().paused = true;
+      if (view==='play' && round().active && !round().feedback) round().paused = true;
       stopAudio(); view='menu'; paint('#title'); break;
     case 'open': game=value; pace=sessions[game]?.pace || 'gentle'; view='brief'; paint('#title'); break;
     case 'pace': pace=value; paint(`[data-value="${pace}"]`); break;
@@ -690,7 +706,7 @@ document.addEventListener('keydown',event=>{
 });
 
 document.addEventListener('visibilitychange',()=>{
-  if (document.hidden && view==='play' && !round().paused && !round().feedback) pause();
+  if (document.hidden && view==='play' && round().active && !round().paused && !round().feedback) pause();
 });
 
 function animate(now) {
