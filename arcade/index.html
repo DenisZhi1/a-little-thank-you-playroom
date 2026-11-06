@@ -104,9 +104,13 @@ p{line-height:1.38;margin:5px 0}
 .cloud{position:absolute;top:50%;left:89%;transform:translate(-50%,-50%);width:clamp(49px,13%,95px);height:77%;border-radius:49% 47% 37% 38%;
   background:#fffaf0ec;box-shadow:0 3px 0 #abc7d3b0;pointer-events:none;padding:3px}
 .cloud img{width:100%;height:100%;object-fit:contain}
-.balloon{position:absolute;pointer-events:none;left:20%;top:50%;width:clamp(35px,10%,65px);height:28%;transform:translate(-50%,-50%);
+.balloon{position:absolute;pointer-events:none;left:13%;top:50%;width:clamp(35px,10%,65px);height:28%;transform:translate(-50%,-50%);
   transition:top .15s ease-out;filter:drop-shadow(0 2px 1px #60435466)}
 .balloon svg{width:100%;height:100%}
+.airfield[data-flying="true"] .balloon::before{content:"";position:absolute;right:86%;top:28%;width:57%;height:27%;
+  border-block:2px solid #fff8dfa8;border-radius:50%;transform:skew(-16deg)}
+.airfield[data-flying="true"] .balloon svg{animation:balloon-sway 1.9s ease-in-out infinite}
+@keyframes balloon-sway{0%,100%{transform:rotate(-4deg) translateY(1px)}50%{transform:rotate(3deg) translateY(-2px)}}
 .pause-screen,.round-result{position:absolute;inset:0;z-index:4;background:#fff1d7e8;display:grid;place-content:center;justify-items:center;gap:8px;
   text-align:center;padding:10px;font-size:1.18rem;font-weight:800}
 .pause-screen strong{font:800 1.85rem Georgia,serif}
@@ -161,7 +165,7 @@ p{line-height:1.38;margin:5px 0}
   .answer-list{grid-template-columns:1fr}
 }
 @media (prefers-reduced-motion:reduce){
-  .maze-piece,.balloon,.popup{transition:none;animation:none!important}
+  .maze-piece,.balloon,.balloon svg,.popup{transition:none;animation:none!important}
 }
 
 </style>
@@ -262,7 +266,7 @@ const SpringArcade = (() => {
   }
 
   function newRound(game) {
-    return {elapsed:0, active:game==='maze', paused:false, pos:[...spawn], lane:1,
+    return {elapsed:0, active:game!=='pop', paused:false, pos:[...spawn], lane:1,
       beeHits:0, safeUntil:1050, usedHint:false, feedback:null};
   }
 
@@ -287,7 +291,7 @@ const SpringArcade = (() => {
     return true;
   }
 
-  const duration = attempt => attempt.game==='pop' ? (attempt.pace==='fast'?1900:3050) : (attempt.pace==='fast'?4750:7900);
+  const duration = attempt => attempt.game==='pop' ? (attempt.pace==='fast'?1900:3050) : (attempt.pace==='fast'?6200:10500);
   function wave(attempt) {
     const total = duration(attempt);
     const index = Math.floor(attempt.round.elapsed/total);
@@ -324,7 +328,7 @@ const ARC = SpringArcade;
 const launchers = {
   maze: {name:'Hedge Maze', icon:'✿', topic:'READ & MOVE', intro:'Lead Bunny through the hedges to the gate with the right English word. Watch for bees!', control:'Arrow keys, WASD or the arrow pad.'},
   pop: {name:'Bunny Pop', icon:'✦', topic:'LISTEN & REACT', intro:'Listen for a gift. Tap its picture when it pops up. Some waves have only distractors!', control:'Tap a pot or press its number, 1–9.'},
-  flight: {name:'Sky Courier', icon:'☁', topic:'READ & STEER', intro:'Read the order. Steer your balloon into the cloud carrying the right gift as it reaches you.', control:'Up and down arrows, or tap a lane.'},
+  flight: {name:'Sky Courier', icon:'☁', topic:'READ & STEER', intro:'Read the order as your balloon flies forward. Steer it into the cloud carrying the right gift.', control:'Use ↑ and ↓ or tap a lane to change height.'},
 };
 const rabbit = `<svg viewBox="0 0 64 66" aria-hidden="true"><g stroke="#744459" stroke-width="2.4" stroke-linejoin="round">
 <path fill="#fff0d8" d="M19 32C5 3 18-1 26 24c4-30 19-27 14 5 13 2 20 11 16 22-6 15-40 17-48 1-5-9 0-16 11-20Z"/>
@@ -410,8 +414,7 @@ function prompt() {
       <span class="pop-wave"></span>`;
   }
   return `<span class="kicker">TODAY’S ORDER</span><p class="clue-line">Could I have ${q.order}, please?</p>
-    ${btn('▶ Hear the gift','listen','','secondary')}
-    ${round().active?'':btn('Fly!','go')}`;
+    ${btn('▶ Hear the gift','listen','','secondary')}`;
 }
 
 function pad() {
@@ -524,19 +527,24 @@ function listen() {
   stopAudio();
   const audio = new Audio(Assets.clips[task().id]);
   clip = audio;
+  listening = true;
   if (game==='pop') {
     round().active = true;
-    listening = true;
     paint('[data-action="listen"]');
     setNotice('Listen first. The gifts pop up when the word ends.');
+  } else {
+    setNotice('Listen to the gift. Your balloon will fly on when the word ends.');
+    updateStage();
   }
   function finished() {
     if (clip!==audio) return;
     listening = false;
     if (game==='pop') {
       setNotice('Tap the matching gift. It can move to a new pot!');
-      updateStage();
+    } else {
+      setNotice('Steer into the cloud with the right gift.');
     }
+    updateStage();
   }
   audio.onended = finished;
   audio.play().catch(()=>{
@@ -567,9 +575,9 @@ function answer(id) {
 function go() {
   if (round().paused || round().feedback || round().active) return;
   round().active = true;
-  if (game==='pop') round().usedHint = true;
-  notice = game==='pop'?'Tap the matching gift when it pops up.':'Steer into the matching gift cloud.';
-  paint(game==='flight'?'[data-action="lane"][data-value="1"]':'#title');
+  round().usedHint = true;
+  notice = 'Tap the matching gift when it pops up.';
+  paint('#title');
 }
 
 function move(index) {
@@ -616,12 +624,16 @@ function updateStage() {
   const bar = scene.querySelector('.clock-track i');
   bar.style.transform = `scaleX(${Math.max(0,1-elapsed/(duration*(game==='pop'?3:1)))})`;
   if (game==='flight') {
-    const ship = scene.querySelector('.balloon');
-    ship.style.top = ((round().lane+.5)/3*100)+'%';
+    const field = scene.querySelector('.airfield');
+    const ship = field.querySelector('.balloon');
     const progress = Math.min(1,elapsed/duration);
-    scene.querySelectorAll('.flight-lane').forEach((lane,i)=>{
+    const meetingPoint = 78;
+    field.dataset.flying = !round().paused && !listening && !round().feedback;
+    ship.style.left = (13+(meetingPoint-13)*progress)+'%';
+    ship.style.top = ((round().lane+.5)/3*100)+'%';
+    field.querySelectorAll('.flight-lane').forEach((lane,i)=>{
       lane.classList.toggle('chosen',i===round().lane);
-      lane.querySelector('.cloud').style.left = (89-69*progress)+'%';
+      lane.querySelector('.cloud').style.left = (89-(89-meetingPoint)*progress)+'%';
     });
     return;
   }
