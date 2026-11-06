@@ -198,8 +198,10 @@ h3{font-size:.92rem;margin:13px 0 7px;color:var(--plum)}
 .gallery-zone img{max-width:100%;width:100%;height:100%;min-height:0;object-fit:contain;pointer-events:none}
 .gallery-zone.door img{height:80%;align-self:start}
 .gallery-zone.filled{border-style:solid;background:#fffbebee}
-.gallery-zone[draggable]{cursor:grab}
-.gallery-scene.has-piece .gallery-zone:hover,.gallery-zone:focus-visible{outline:3px solid #8c2854;outline-offset:2px}
+.gallery-piece,.gallery-zone[data-gallery-item]{touch-action:none;user-select:none;cursor:grab}
+.gallery-scene.has-piece .gallery-zone:hover,.gallery-zone:focus-visible,.gallery-zone.drop-ready{outline:3px solid #8c2854;outline-offset:2px}
+.gallery-drag-ghost{position:fixed;top:0;left:0;width:65px;height:65px;object-fit:contain;
+  pointer-events:none;z-index:10;filter:drop-shadow(0 3px 3px #53274666)}
 .gallery-status{padding:4px 7px;margin:5px 0;border-radius:8px;background:#f8ead9;min-height:24px}
 .gallery-status.good{background:#e3eed2;color:#385326}
 .gallery-rounds{margin-top:5px}
@@ -710,7 +712,7 @@ const GalleryUI = (() => {
         ${picks[id] ? 'filled' : ''} ${post ? 'door' : ''}" style="--x:${zone.x}%;--y:${zone.y}%"
         data-action="gallery-zone" data-value="${id}" data-gallery-drop="${id}"
         aria-label="${zone.label}${picks[id] ? ': '+nouns[picks[id]] : ''}"
-        ${!post && picks[id] ? `draggable="true" data-gallery-item="${picks[id]}"` : ''}>
+        ${!post && picks[id] ? `data-gallery-item="${picks[id]}"` : ''}>
       ${picks[id] ? gifts(picks[id]) : `<span aria-hidden="true">${post ? '✉' : '+'}</span>`}
       ${post || hint ? `<small>${zone.label}</small>` : ''}</button>`).join('');
     return `<section class="gallery-game">
@@ -732,7 +734,7 @@ const GalleryUI = (() => {
               ${button(hint?'Hide places':'Show places','gallery-hint','secondary')}`}
           </div>
           <div class="gallery-bank ${post ? '' : 'picnic-bank'}" aria-label="Gift tray">${state.bank.map(item=>`<button type="button" class="gallery-piece
-              ${placed.includes(item.id) ? 'is-placed' : ''}" draggable="true" data-gallery-item="${item.id}"
+              ${placed.includes(item.id) ? 'is-placed' : ''}" data-gallery-item="${item.id}"
               data-action="gallery-pick" data-value="${item.id}" aria-pressed="${state.selected===item.id}">
             ${gifts(item.id)}<span>${nouns[item.id]}</span></button>`).join('')}</div>
         </div>
@@ -779,7 +781,51 @@ const GalleryUI = (() => {
       <div class="controls">${button('Play again','gallery-start','',`data-value="${state.mode}"`)}
         ${button('Back to my game','gallery-resume','secondary')}${button('‹ Games','home','quiet')}</div></section>`;
   }
-  return { menu, view, confirm, review };
+  function bindDrag(screen,onDrop) {
+    let gesture;
+    let swallowClick = false;
+    const spot = event => document.elementFromPoint(event.clientX,event.clientY)?.closest('[data-gallery-drop]');
+    screen.addEventListener('pointerdown',event=>{
+      const piece = event.target.closest('[data-gallery-item]');
+      swallowClick = false;
+      if (!piece || !event.isPrimary || event.button !== 0) return;
+      gesture = { pointer:event.pointerId, item:piece.dataset.galleryItem,
+        x:event.clientX, y:event.clientY, image:piece.querySelector('img') };
+    });
+    screen.addEventListener('pointermove',event=>{
+      if (gesture?.pointer !== event.pointerId) return;
+      if (!gesture.ghost) {
+        if (Math.hypot(event.clientX-gesture.x,event.clientY-gesture.y) < 7) return;
+        screen.setPointerCapture(event.pointerId);
+        gesture.ghost = gesture.image.cloneNode();
+        gesture.ghost.className = 'gallery-drag-ghost';
+        screen.append(gesture.ghost);
+      }
+      gesture.ghost.style.transform = `translate(${event.clientX}px,${event.clientY}px) translate(-50%,-55%)`;
+      gesture.target?.classList.remove('drop-ready');
+      gesture.target = spot(event);
+      gesture.target?.classList.add('drop-ready');
+    });
+    const end = event => {
+      if (gesture?.pointer !== event.pointerId) return;
+      const { ghost,item,target } = gesture;
+      gesture = undefined;
+      if (!ghost) return;
+      swallowClick = true;
+      ghost.remove();
+      target?.classList.remove('drop-ready');
+      const drop = event.type === 'pointerup' && spot(event);
+      if (drop) onDrop(item,drop.dataset.galleryDrop);
+    };
+    screen.addEventListener('pointerup',end);
+    screen.addEventListener('pointercancel',end);
+    screen.addEventListener('click',event=>{
+      if (!swallowClick || event.detail === 0) return;
+      swallowClick = false;
+      event.stopImmediatePropagation();
+    },true);
+  }
+  return { menu, view, confirm, review, bindDrag };
 })();
 
 
@@ -1246,16 +1292,17 @@ screen.addEventListener('click',event=>{
     case 'cancel': page = 'active'; break;
     case 'review': page = 'review'; break;
   }
-  render(focus,value);
+  render(focus,action === 'gallery-next' ? String(session.current) : value);
+});
+
+GalleryUI.bindDrag(screen,(item,zone)=>{
+  if (page === 'gallery-game' && GalleryGames.place(session,item,zone)) {
+    message = '';
+    render('gallery-zone',zone);
+  }
 });
 
 screen.addEventListener('dragstart',event=>{
-  const galleryItem = event.target.closest('[data-gallery-item]');
-  if (page === 'gallery-game' && galleryItem) {
-    event.dataTransfer.setData('application/x-playroom-gift',galleryItem.dataset.galleryItem);
-    event.dataTransfer.effectAllowed = 'move';
-    return;
-  }
   const facePart = event.target.closest('[data-mum-part]');
   if (page === 'mum' && facePart) {
     event.dataTransfer.setData('text/plain', facePart.dataset.mumPart);
@@ -1274,24 +1321,12 @@ screen.addEventListener('dragstart',event=>{
   }
 });
 screen.addEventListener('dragover',event=>{
-  if (page === 'gallery-game' && event.target.closest('[data-gallery-drop]') &&
-      event.dataTransfer.types.includes('application/x-playroom-gift')) event.preventDefault();
   if (page === 'mum' && event.target.closest('[data-mum-drop]')) event.preventDefault();
   if (page !== 'active') return;
   if (session.mode === 'build' && event.target.closest('[data-drop]')) event.preventDefault();
   if (session.mode === 'bouquet' && event.target.closest('[data-bouquet-drop]')) event.preventDefault();
 });
 screen.addEventListener('drop',event=>{
-  const galleryZone = event.target.closest('[data-gallery-drop]');
-  if (page === 'gallery-game' && galleryZone) {
-    event.preventDefault();
-    const item = event.dataTransfer.getData('application/x-playroom-gift');
-    if (item && GalleryGames.place(session,item,galleryZone.dataset.galleryDrop)) {
-      message = '';
-      render('gallery-zone',galleryZone.dataset.galleryDrop);
-    }
-    return;
-  }
   if (page === 'mum' && event.target.closest('[data-mum-drop]')) {
     event.preventDefault();
     const id = event.dataTransfer.getData('text/plain');
