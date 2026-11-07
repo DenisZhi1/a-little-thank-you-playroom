@@ -82,9 +82,9 @@ p{line-height:1.38;margin:5px 0}
 .path.gate{color:#fff9e4;background:#8b4161;border-color:#743453;font-size:.89rem;font-weight:900;box-shadow:inset 0 0 0 2px #f3d29b}
 .maze-piece{position:absolute;z-index:1;width:calc(95% / 11);height:calc(95% / 7);transform:translate(-50%,-50%);
   display:grid;place-items:center;pointer-events:none}
-.bunny-player{transition:left .12s ease-out,top .12s ease-out}
-.bunny-hop,.bunny-sprite,.bee-sprite{display:block;width:100%;height:100%;min-width:0;min-height:0}
+.bunny-hop,.bunny-sprite,.bee-facing,.bee-sprite{display:block;width:100%;height:100%;min-width:0;min-height:0}
 .bunny-hop{transform-origin:50% 86%}
+.bee-facing{transform:scaleX(var(--bee-facing,1))}
 .bunny-sprite{object-fit:contain;transform:scaleX(var(--facing,1));animation:bunny-breathe 2.3s ease-in-out infinite;transform-origin:50% 86%}
 .bunny-hop,.bee-sprite{filter:drop-shadow(0 2px 1px #70475370)}
 .bee-sprite{animation:bee-hover .9s ease-in-out infinite;overflow:visible}
@@ -220,6 +220,7 @@ const SpringArcade = (() => {
     '##.#...#.##',
   ];
   const spawn = [5,3];
+  const moveMs = 190;
   const gates = [[0,1],[10,1],[5,6]];
   const patrols = [
     [[4,0],[5,0],[6,0],[6,1],[6,2],[6,3],[5,3],[4,3],[4,2],[4,1]],
@@ -303,7 +304,7 @@ const SpringArcade = (() => {
 
   function newRound(game) {
     return {elapsed:0, active:game!=='pop', paused:false, pos:[...spawn], lane:1,
-      facing:1, usedHint:false, feedback:null};
+      facing:1, walk:null, pendingMove:null, usedHint:false, feedback:null};
   }
 
   function step(pos,dx,dy) {
@@ -311,37 +312,82 @@ const SpringArcade = (() => {
     return maze[next[1]]?.[next[0]]==='.' ? next : pos;
   }
 
-  function bees(attempt) {
+  function startMove(attempt,dx,dy) {
+    const round = attempt.round;
+    if (attempt.game!=='maze' || round.paused || round.feedback || !round.active || round.walk || Math.abs(dx)+Math.abs(dy)!==1) return false;
+    const target = step(round.pos,dx,dy);
+    if (target===round.pos) return false;
+    round.walk = {from:[...round.pos],to:target,start:round.elapsed};
+    if (dx) round.facing = dx;
+    return true;
+  }
+
+  function bunnyPose(attempt,elapsed=attempt.round.elapsed) {
+    const {pos,walk,facing} = attempt.round;
+    const progress = walk ? Math.max(0,Math.min(1,(elapsed-walk.start)/moveMs)) : 0;
+    const position = walk ? walk.from.map((value,axis)=>value+(walk.to[axis]-value)*progress) : pos;
+    return {position,progress,facing};
+  }
+
+  function completeMove(attempt) {
+    const round = attempt.round;
+    if (!round.walk || round.elapsed<round.walk.start+moveMs) return false;
+    round.pos = round.walk.to;
+    round.walk = null;
+    return true;
+  }
+
+  function beePoses(attempt,elapsed=attempt.round.elapsed) {
     const pace = attempt.pace==='fast' ? 590 : 1100;
-    const tick = attempt.round.elapsed/pace;
+    const tick = elapsed/pace;
     const step = Math.floor(tick);
-    const travel = Math.min(1,(tick-step)/.72);
-    const blend = travel*travel*(3-2*travel);
+    const progress = tick-step;
     const active = attempt.pace==='fast' ? patrols : patrols.slice(0,1);
     return active.map((route,i)=>{
       const from = (step+i*3)%route.length;
       const next = route[(from+1)%route.length];
-      return route[from].map((value,axis)=>value+(next[axis]-value)*blend);
+      let dx = next[0]-route[from][0];
+      // Keep the last horizontal heading while travelling up or down.
+      for (let back=1;dx===0 && back<route.length;back++) {
+        const a = (from-back+route.length)%route.length;
+        dx = route[(a+1)%route.length][0]-route[a][0];
+      }
+      return {position:route[from].map((value,axis)=>value+(next[axis]-value)*progress),facing:dx>0?-1:1};
     });
   }
 
-  function bump(attempt,from=attempt.round.pos) {
+  const bees = (attempt,elapsed=attempt.round.elapsed) => beePoses(attempt,elapsed).map(pose=>pose.position);
+
+  function bump(attempt,fromTime=attempt.round.elapsed) {
     const round = attempt.round;
     if (attempt.game!=='maze' || !round.active || round.paused || round.feedback) return false;
-    const [dx,dy] = round.pos.map((value,axis)=>value-from[axis]);
-    const length = dx*dx+dy*dy;
-    for (const [bx,by] of bees(attempt)) {
-      const projection = length ? ((bx-from[0])*dx+(by-from[1])*dy)/length : 0;
-      const t = Math.max(0,Math.min(1,projection));
-      const contact = [from[0]+dx*t,from[1]+dy*t];
-      if (Math.hypot(bx-contact[0],by-contact[1])>.62) continue;
-      round.pos = contact;
-      round.active = false;
-      round.feedback = { task:attempt.tasks[attempt.index].id, cause:'bee', ok:false, points:0, usedHint:round.usedHint };
-      attempt.answers[attempt.index] = round.feedback;
-      return true;
+    const start = Math.max(0,Math.min(fromTime,round.elapsed));
+    const bunnyFrom = bunnyPose(attempt,start).position;
+    const bunnyTo = bunnyPose(attempt).position;
+    const beesFrom = bees(attempt,start);
+    let firstContact = Infinity;
+    for (const [i,bee] of bees(attempt).entries()) {
+      const offset = bunnyFrom.map((value,axis)=>value-beesFrom[i][axis]);
+      const movement = bunnyTo.map((value,axis)=>value-bunnyFrom[axis]-bee[axis]+beesFrom[i][axis]);
+      const squaredSpeed = movement[0]**2+movement[1]**2;
+      const distance = offset[0]**2+offset[1]**2-.62**2;
+      if (distance<=0) { firstContact=0; break; }
+      if (!squaredSpeed) continue;
+      const approach = 2*(offset[0]*movement[0]+offset[1]*movement[1]);
+      const discriminant = approach**2-4*squaredSpeed*distance;
+      if (discriminant<0) continue;
+      const contact = (-approach-Math.sqrt(discriminant))/(2*squaredSpeed);
+      if (contact>=0 && contact<=1) firstContact = Math.min(firstContact,contact);
     }
-    return false;
+    if (!Number.isFinite(firstContact)) return false;
+    round.elapsed = start+(round.elapsed-start)*firstContact;
+    round.pos = bunnyPose(attempt).position;
+    round.walk = null;
+    round.pendingMove = null;
+    round.active = false;
+    round.feedback = { task:attempt.tasks[attempt.index].id, cause:'bee', ok:false, points:0, usedHint:round.usedHint };
+    attempt.answers[attempt.index] = round.feedback;
+    return true;
   }
 
   const duration = attempt => attempt.game==='pop' ? attempt.tasks[attempt.index].pops.at(-1).end+225 : (attempt.pace==='fast'?6200:10500);
@@ -377,7 +423,7 @@ const SpringArcade = (() => {
   const done = attempt => Boolean(attempt.round.feedback &&
     (attempt.round.feedback.cause==='bee' || attempt.index===attempt.tasks.length-1 || attempt.hearts===0));
 
-  return { clues, maze, spawn, gates, makeAttempt, step, bees, bump, duration, peek, record, advance, done };
+  return { clues, maze, spawn, gates, makeAttempt, step, startMove, bunnyPose, completeMove, beePoses, bees, bump, duration, peek, record, advance, done };
 })();
 if (typeof module !== 'undefined') module.exports = SpringArcade;
 
@@ -402,6 +448,7 @@ const balloon = `<svg viewBox="0 0 82 112" aria-hidden="true"><g stroke="#7b4161
 <path fill="#fff0d8" d="M36 95c-8-19 0-21 4-7 1-13 8-12 6 2 8 4 5 9-4 9-6 0-8-2-6-4Z"/>
 </g></svg>`;
 const scene = document.querySelector('#arcade');
+const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
 const sessions = {};
 const directions = [[0,-1],[-1,0],[0,1],[1,0]];
 const laneNames = ['Top','Middle','Bottom'];
@@ -494,7 +541,7 @@ function stage() {
     })).join('');
     return `<div class="maze-board" aria-label="Garden maze" data-still="${round().paused || Boolean(round().feedback)}"><div class="maze-grid">${tiles}</div>
       <div class="maze-piece bunny-player" role="img" aria-label="Bunny" style="--facing:${round().facing}"><span class="bunny-hop">${sprite('bunny','bunny-sprite')}</span></div>
-      ${ARC.bees(attempt).map(()=>`<div class="maze-piece bee" role="img" aria-label="Bee">${beeSprite}</div>`).join('')}
+      ${ARC.bees(attempt).map(()=>`<div class="maze-piece bee" role="img" aria-label="Bee"><span class="bee-facing">${beeSprite}</span></div>`).join('')}
     </div>`;
   }
   if (game==='pop') {
@@ -642,35 +689,28 @@ function go() {
 }
 
 function move(index) {
-  if (round().paused || round().feedback || !directions[index]) return;
-  const from = round().pos;
-  const [dx,dy] = directions[index];
-  round().pos = ARC.step(from,dx,dy);
-  if (round().pos===from) return;
-  if (dx) round().facing = dx;
-  if (beeContact(from)) return;
-  const gate = ARC.gates.findIndex(([x,y])=>round().pos[0]===x && round().pos[1]===y);
-  if (gate>=0) answer(task().options[gate]);
-  else {
-    updateStage();
-    if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      const hop = scene.querySelector('.bunny-hop');
-      hop.getAnimations().forEach(animation=>animation.cancel());
-      hop.animate([
-        {transform:'translateY(0) scale(1.08,.91)'},
-        {transform:'translateY(-19%) rotate(-6deg) scale(.96,1.04)',offset:.42},
-        {transform:'translateY(0) scale(1.07,.94)',offset:.82},
-        {transform:'none'},
-      ],{duration:235,easing:'ease-out'});
-    }
-  }
+  if (round().paused || round().feedback || !round().active || !directions[index]) return;
+  if (round().walk) { round().pendingMove=index; return; }
+  if (ARC.startMove(attempt,...directions[index])) updateStage();
 }
 
-function beeContact(from) {
-  if (!ARC.bump(attempt,from)) return false;
+function beeContact(fromTime) {
+  if (!ARC.bump(attempt,fromTime)) return false;
   notice = '';
   paint('[data-action="start"]');
   return true;
+}
+
+function updateMaze(fromTime) {
+  if (beeContact(fromTime)) return;
+  if (ARC.completeMove(attempt)) {
+    const gate = ARC.gates.findIndex(([x,y])=>round().pos[0]===x && round().pos[1]===y);
+    if (gate>=0) { answer(task().options[gate]); return; }
+    const pending = round().pendingMove;
+    round().pendingMove = null;
+    if (Number.isInteger(pending)) move(pending);
+  }
+  updateStage();
 }
 
 function pop(index) {
@@ -693,11 +733,17 @@ function position(node,coords) {
 
 function updateStage() {
   if (game==='maze') {
+    const pose = ARC.bunnyPose(attempt);
     const bunny = scene.querySelector('.bunny-player');
-    position(bunny,round().pos);
-    bunny.style.setProperty('--facing',round().facing);
-    const bees = ARC.bees(attempt);
-    scene.querySelectorAll('.bee').forEach((node,i)=>position(node,bees[i]));
+    position(bunny,pose.position);
+    bunny.style.setProperty('--facing',pose.facing);
+    const jump = reducedMotion.matches ? 0 : Math.sin(pose.progress*Math.PI);
+    bunny.querySelector('.bunny-hop').style.transform = `translateY(${-jump*15}%) scale(1,${1-jump*.035})`;
+    const bees = ARC.beePoses(attempt);
+    scene.querySelectorAll('.bee').forEach((node,i)=>{
+      position(node,bees[i].position);
+      node.style.setProperty('--bee-facing',bees[i].facing);
+    });
     return;
   }
   const elapsed = round().elapsed;
@@ -807,10 +853,12 @@ function animate(now) {
   const delta = Math.min(80,now-(lastFrame ?? now));
   lastFrame = now;
   if (view==='play' && round().active && !round().paused && !round().feedback && !listening) {
+    const fromTime = round().elapsed;
     round().elapsed += delta;
-    if (game==='flight' && round().elapsed>=ARC.duration(attempt)) answer(task().options[round().lane]);
+    if (game==='maze') updateMaze(fromTime);
+    else if (game==='flight' && round().elapsed>=ARC.duration(attempt)) answer(task().options[round().lane]);
     else if (game==='pop' && round().elapsed>=ARC.duration(attempt)) answer(undefined);
-    else if (game!=='maze' || !beeContact()) updateStage();
+    else updateStage();
   }
   requestAnimationFrame(animate);
 }
