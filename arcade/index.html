@@ -5,7 +5,7 @@
 <title>Spring Arcade · Mother’s Day English</title>
 <style>:root{color:#4f2840;background:#fff4df;font-family:"Segoe UI",system-ui,sans-serif;font-size:15px;--ink:#552641;--rose:#a34267;--cream:#fffaf0;--line:#e3c3ad}
 *{box-sizing:border-box}
-body{margin:0;background:radial-gradient(ellipse at 90% 5%,#f8e0dc 0%,transparent 49%),#fcf2de;min-height:100vh}
+body{margin:0;display:flow-root;background:radial-gradient(ellipse at 90% 5%,#f8e0dc 0%,transparent 49%),#fcf2de;min-height:100vh}
 button,a{-webkit-tap-highlight-color:transparent}
 button{font:inherit;color:inherit;cursor:pointer}
 button:disabled{cursor:default}
@@ -188,6 +188,7 @@ p{line-height:1.38;margin:5px 0}
 .answer-list img{width:46px;height:39px;object-fit:contain}.answer-list small{display:block;color:#81516a}
 .result-mark{font-weight:900;color:#657d43;margin-right:4px}
 @media (min-width:651px) and (max-height:530px){
+  #arcade{margin-bottom:8px}
   .menu-head{min-height:120px}
   .game-cover{height:min(140px,34vh)}
   .stage{height:clamp(185px,calc(100vh - 145px),294px)}
